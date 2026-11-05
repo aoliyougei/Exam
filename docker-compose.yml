@@ -1,0 +1,11 @@
+services:
+  exam-system:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./static:/app/static
+      - ./storage:/app/storage
+    environment:
+      - API_KEY=${API_KEY:-exam_system_2024_secret_key}
+    restart: unless-stopped
