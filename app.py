@@ -169,6 +169,11 @@ def generate_exam_html(exam_data):
                 margin-right: 10px;
             }}
             
+            #questionCount::placeholder {{
+                color: #888;
+                opacity: 1;
+            }}
+
             .form-group input {{
                 flex: 1;
                 padding: 8px 12px;
@@ -342,6 +347,11 @@ def generate_exam_html(exam_data):
                 text-align: center;
             }}
             
+            #wrongQuestionDetails {{ text-align: left; overflow-wrap: anywhere; }}
+            #wrongQuestionDetails article {{ background: #f8f9fa; border-left: 4px solid #dc3545; padding: 16px; margin: 16px 0; border-radius: 8px; white-space: pre-wrap; }}
+            #wrongQuestionDetails p {{ margin-top: 8px; }}
+            .btn:disabled {{ opacity: 0.6; cursor: wait; }}
+
             .score {{
                 font-size: 48px;
                 font-weight: bold;
@@ -410,7 +420,7 @@ def generate_exam_html(exam_data):
     <body>
         <div class="header">
             <h1>{exam_data['title']}</h1>
-            <p>考试时间: {exam_data.get('duration', 60)}分钟 | 总分: {exam_data['total_score']}分</p>
+            <p>考试时间: {exam_data.get('duration', 60)}分钟 | 总分: <span id="examTotalScore">待开始</span>分</p>
         </div>
         
         <div id="userInfoForm" class="user-info-form">
@@ -431,6 +441,12 @@ def generate_exam_html(exam_data):
                 <label for="name">姓名:</label>
                 <input type="text" id="name" placeholder="请输入姓名">
             </div>
+            <div class="form-group">
+                <label for="questionCount">题目数量:</label>
+                <input type="number" id="questionCount" min="1" max="{len(exam_data['questions'])}"
+                       step="1" placeholder="如不填写则为全部考题" aria-describedby="countHelp">
+            </div>
+            <p id="countHelp" style="color: #666; font-size: 14px;">共 {len(exam_data['questions'])} 道题，填写后随机抽取。100 道以内总分 100，超过 100 道每题 1 分。</p>
             <button class="btn" onclick="startExam()">开始考试</button>
         </div>
         
@@ -456,7 +472,7 @@ def generate_exam_html(exam_data):
         <div id="resultContainer" class="result-container">
             <h2>考试完成！</h2>
             <div class="score" id="finalScore">0</div>
-            <p>总分: {exam_data['total_score']}分</p>
+            <p>总分: <span id="resultTotalScore">待开始</span>分</p>
             
             <div class="user-info-display">
                 <h3>考生信息</h3>
@@ -472,14 +488,21 @@ def generate_exam_html(exam_data):
             </div>
             
             <div style="margin: 20px 0;">
+                <button class="btn" id="saveScoreBtn" onclick="saveScoreImage()">保存成绩</button>
                 <button class="btn" onclick="reviewWrongQuestions()">查看错题</button>
                 <button class="btn btn-secondary" onclick="resetExam()">重置考试</button>
             </div>
+            <section id="wrongQuestionDetails" hidden></section>
         </div>
         
         <script>
             const examData = {json.dumps(exam_data, ensure_ascii=False)};
-            const totalQuestions = examData.questions.length;
+            const questionBank = examData.questions.slice();
+            const questionTemplates = Array.from(document.querySelectorAll('#questionsContainer .question'))
+                .map(node => node.cloneNode(true));
+            let totalQuestions = questionBank.length;
+            let pendingAdvance;
+            let startupTimeout;
             let currentQuestion = 0;
             let userAnswers = new Array(totalQuestions).fill(null);
             let userInfo = {{}};
@@ -511,7 +534,7 @@ def generate_exam_html(exam_data):
             }}
             
             function updateNavStatus() {{
-                const navItems = document.querySelectorAll('.question-nav-item');
+                const navItems = document.querySelectorAll('#questionNav .question-nav-item');
                 navItems.forEach((item, index) => {{
                     item.classList.remove('current', 'answered', 'wrong');
                     
@@ -598,6 +621,71 @@ def generate_exam_html(exam_data):
                 }});
             }}
             
+            function prepareAttempt() {{
+                const field = document.getElementById('questionCount');
+                const raw = field.value.trim();
+                if (field.validity.badInput || (raw !== '' && !/^[0-9]+$/.test(raw))) {{
+                    alert('请输入有效的正整数题目数量');
+                    return false;
+                }}
+                const count = raw === '' ? questionBank.length : Number(raw);
+                if (!Number.isSafeInteger(count) || count < 1 || count > questionBank.length) {{
+                    alert(`题目数量必须在 1 至 ${{questionBank.length}} 之间`);
+                    return false;
+                }}
+                const indices = questionBank.map((_, index) => index);
+                if (raw !== '') {{
+                    for (let i = indices.length - 1; i > 0; i--) {{
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [indices[i], indices[j]] = [indices[j], indices[i]];
+                    }}
+                }}
+                const selected = indices.slice(0, count);
+                const total = count > 100 ? count : 100;
+                const baseScore = count > 100 ? 1 : Math.floor(100 / count);
+                const container = document.getElementById('questionsContainer');
+                container.innerHTML = '';
+                examData.questions = selected.map((sourceIndex, index) => {{
+                    const score = index === count - 1 ? total - baseScore * (count - 1) : baseScore;
+                    const node = questionTemplates[sourceIndex].cloneNode(true);
+                    node.id = `question_${{index}}`;
+                    node.dataset.index = index;
+                    node.dataset.score = score;
+                    node.querySelector('.question-number').textContent = `第${{index + 1}}题`;
+                    node.querySelector('.question-score').textContent = `分值: ${{score}}分`;
+                    node.querySelectorAll('input').forEach((input, optionIndex) => {{
+                        const label = node.querySelector(`label[for="${{input.id}}"]`);
+                        input.id = `q${{index}}_opt${{optionIndex}}`;
+                        input.name = `q${{index}}`;
+                        if (label) label.htmlFor = input.id;
+                    }});
+                    container.appendChild(node);
+                    return {{...questionBank[sourceIndex], score}};
+                }});
+                examData.total_score = total;
+                totalQuestions = count;
+                currentQuestion = 0;
+                userAnswers = new Array(count).fill(null);
+                timeLeft = examData.duration * 60 || 3600;
+                clearInterval(timerInterval);
+                clearTimeout(pendingAdvance);
+                clearTimeout(startupTimeout);
+                document.getElementById('examTotalScore').textContent = total;
+                document.getElementById('resultTotalScore').textContent = total;
+                bindOptionEvents();
+                return true;
+            }}
+
+            function scheduleAdvance() {{
+                clearTimeout(pendingAdvance);
+                const answeredIndex = currentQuestion;
+                pendingAdvance = setTimeout(() => {{
+                    if (currentQuestion !== answeredIndex || document.getElementById('examContainer').style.display !== 'block') return;
+                    if (currentQuestion < totalQuestions - 1) nextQuestion();
+                    else finishExam();
+                }}, 1000);
+            }}
+
             function startExam() {{
                 userInfo = {{
                     company: document.getElementById('company').value,
@@ -611,13 +699,14 @@ def generate_exam_html(exam_data):
                     return;
                 }}
                 
+                if (!prepareAttempt()) return;
                 document.getElementById('userInfoForm').style.display = 'none';
                 document.getElementById('examContainer').style.display = 'block';
                 
                 initQuestionNav();
                 
                 requestAnimationFrame(() => {{
-                    setTimeout(() => {{
+                    startupTimeout = setTimeout(() => {{
                         showQuestion(currentQuestion);
                         startTimer();
                     }}, 50);
@@ -769,6 +858,7 @@ def generate_exam_html(exam_data):
             }}
             
             function nextQuestion() {{
+                clearTimeout(pendingAdvance);
                 if (currentQuestion < totalQuestions - 1) {{
                     currentQuestion++;
                     showQuestion(currentQuestion);
@@ -778,6 +868,7 @@ def generate_exam_html(exam_data):
             }}
             
             function previousQuestion() {{
+                clearTimeout(pendingAdvance);
                 if (currentQuestion > 0) {{
                     currentQuestion--;
                     showQuestion(currentQuestion);
@@ -785,6 +876,7 @@ def generate_exam_html(exam_data):
             }}
             
             function goToQuestion(index) {{
+                clearTimeout(pendingAdvance);
                 currentQuestion = index;
                 showQuestion(index);
             }}
@@ -811,6 +903,8 @@ def generate_exam_html(exam_data):
             
             function finishExam() {{
                 clearInterval(timerInterval);
+                clearTimeout(pendingAdvance);
+                clearTimeout(startupTimeout);
                 
                 let totalScore = 0;
                 for (let i = 0; i < totalQuestions; i++) {{
@@ -828,6 +922,145 @@ def generate_exam_html(exam_data):
                 document.getElementById('resultEmployeeId').textContent = userInfo.employeeId;
                 document.getElementById('resultDepartment').textContent = userInfo.department;
                 document.getElementById('resultName').textContent = userInfo.name;
+                updateNavStatus();
+                renderWrongQuestionDetails();
+            }}
+
+            function getWrongQuestionDetails() {{
+                const wrong = [];
+                for (let i = 0; i < totalQuestions; i++) {{
+                    if (checkAnswer(i, false)) continue;
+                    const node = document.getElementById(`question_${{i}}`);
+                    const selected = Array.from(node.querySelectorAll('input:checked')).map(input => {{
+                        const label = node.querySelector(`label[for="${{input.id}}"]`);
+                        const text = label ? label.textContent.trim() : input.value;
+                        return node.dataset.type === 'judgment' ? text : `${{String.fromCharCode(65 + Number(input.value))}}. ${{text}}`;
+                    }});
+                    wrong.push({{number: i + 1, question: node.querySelector('.question-content').textContent.trim(),
+                        selected: selected.length ? selected : ['未作答']}});
+                }}
+                return wrong;
+            }}
+
+            function renderWrongQuestionDetails() {{
+                const container = document.getElementById('wrongQuestionDetails');
+                const wrong = getWrongQuestionDetails();
+                container.replaceChildren();
+                container.hidden = wrong.length === 0;
+                if (!wrong.length) return;
+                const heading = document.createElement('h3');
+                heading.textContent = '错题详情';
+                container.appendChild(heading);
+                wrong.forEach(item => {{
+                    const card = document.createElement('article');
+                    const title = document.createElement('strong');
+                    title.textContent = `第${{item.number}}题：${{item.question}}`;
+                    const answer = document.createElement('p');
+                    answer.textContent = '你的选择：' + item.selected.join('；');
+                    card.append(title, answer);
+                    container.appendChild(card);
+                }});
+            }}
+
+            async function saveScoreImage() {{
+                const button = document.getElementById('saveScoreBtn');
+                if (button.disabled) return;
+                button.disabled = true;
+                button.textContent = '正在生成图片…';
+                try {{
+                    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+                    // Draw locally instead of relying on a CDN or sending candidate data to a server.
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 1000;
+                    let ctx = canvas.getContext('2d');
+                    if (!ctx) throw new Error('Canvas unavailable');
+                    const commands = [];
+                    let y = 20;
+                    const text = (value, size = 22, color = '#333', center = false) => {{
+                        ctx.font = `${{size}}px "Microsoft YaHei", sans-serif`;
+                        let line = '';
+                        const lines = [];
+                        for (const char of String(value)) {{
+                            if (char === '\\n') {{ lines.push(line); line = ''; continue; }}
+                            if (line && ctx.measureText(line + char).width > 880) {{ lines.push(line); line = ''; }}
+                            line += char;
+                        }}
+                        lines.push(line);
+                        lines.forEach(content => {{
+                            commands.push({{kind: 'text', content, size, color, center, y}});
+                            y += Math.ceil(size * 1.6);
+                        }});
+                    }};
+                    commands.push({{kind: 'header', y}});
+                    y += 20;
+                    text(document.querySelector('.header h1').textContent, 34, '#fff', true);
+                    text(`考试时间: ${{examData.duration || 60}}分钟 | 总分: ${{examData.total_score}}分`, 20, '#fff', true);
+                    y += 45;
+                    text('考试完成！', 28, '#333', true);
+                    y += 12;
+                    text(document.getElementById('finalScore').textContent, 52, '#667eea', true);
+                    text(`总分: ${{examData.total_score}}分`, 22, '#333', true);
+                    y += 20;
+                    text('考生信息', 26);
+                    [['单位', userInfo.company], ['工号', userInfo.employeeId], ['部门', userInfo.department], ['姓名', userInfo.name]]
+                        .forEach(([label, value]) => text(`${{label}}: ${{value || ''}}`));
+                    y += 25;
+                    text('答题情况', 26, '#333', true);
+                    const wrong = getWrongQuestionDetails();
+                    const wrongIndices = new Set(wrong.map(item => item.number));
+                    for (let i = 0; i < totalQuestions; i++) {{
+                        commands.push({{kind: 'circle', x: 80 + (i % 17) * 52, y: y + Math.floor(i / 17) * 54,
+                            content: String(i + 1), color: wrongIndices.has(i + 1) ? '#dc3545' : '#28a745'}});
+                    }}
+                    y += Math.ceil(totalQuestions / 17) * 54 + 25;
+                    if (wrong.length) {{
+                        text('错题详情', 28);
+                        wrong.forEach(item => {{
+                            y += 18;
+                            text(`第${{item.number}}题：${{item.question}}`, 22);
+                            text('你的选择：' + item.selected.join('；'), 22, '#b02a37');
+                        }});
+                    }}
+                    // Stay within common browser canvas limits; never silently clip wrong questions.
+                    if (y + 40 > 30000) throw new Error('Image too tall');
+                    canvas.height = Math.ceil(y + 40);
+                    ctx = canvas.getContext('2d');
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    commands.forEach(command => {{
+                        if (command.kind === 'header') {{
+                            const gradient = ctx.createLinearGradient(20, 0, 980, 0);
+                            gradient.addColorStop(0, '#667eea'); gradient.addColorStop(1, '#764ba2');
+                            ctx.fillStyle = gradient; ctx.fillRect(20, command.y, 960, 125);
+                        }} else if (command.kind === 'circle') {{
+                            ctx.fillStyle = command.color; ctx.beginPath();
+                            ctx.arc(command.x, command.y + 20, 20, 0, Math.PI * 2); ctx.fill();
+                            ctx.fillStyle = '#fff'; ctx.font = '18px sans-serif';
+                            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                            ctx.fillText(command.content, command.x, command.y + 20);
+                        }} else {{
+                            ctx.fillStyle = command.color;
+                            ctx.font = `${{command.size}}px "Microsoft YaHei", sans-serif`;
+                            ctx.textAlign = command.center ? 'center' : 'left'; ctx.textBaseline = 'top';
+                            ctx.fillText(command.content, command.center ? 500 : 60, command.y);
+                        }}
+                    }});
+                    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                    if (!blob) throw new Error('Image encoding failed');
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    const safeName = value => String(value).replace(/[\\\\/:*?"<>|\\x00-\\x1f]/g, '_').slice(0, 80);
+                    link.download = `${{safeName(document.querySelector('.header h1').textContent)}}_${{safeName(userInfo.name)}}_成绩.png`;
+                    link.href = url;
+                    document.body.appendChild(link);
+                    link.click(); link.remove();
+                    setTimeout(() => URL.revokeObjectURL(url), 60000);
+                }} catch (error) {{
+                    alert('保存失败，可能是错题内容过长或浏览器不支持图片下载，请尝试浏览器长截图。');
+                }} finally {{
+                    button.disabled = false;
+                    button.textContent = '保存成绩';
+                }}
             }}
             
             function reviewWrongQuestions() {{
@@ -863,6 +1096,10 @@ def generate_exam_html(exam_data):
             
             function resetExam() {{
                 if (confirm('确定要重置考试吗？所有答案将被清空。')) {{
+                    clearTimeout(pendingAdvance);
+                    clearTimeout(startupTimeout);
+                    document.getElementById('examTotalScore').textContent = '待开始';
+                    document.getElementById('resultTotalScore').textContent = '待开始';
                     currentQuestion = 0;
                     userAnswers = new Array(totalQuestions).fill(null);
                     timeLeft = examData.duration * 60 || 3600;
@@ -888,17 +1125,20 @@ def generate_exam_html(exam_data):
                 }}
             }}
             
-            window.onload = function() {{
+            function bindOptionEvents() {{
                 document.querySelectorAll('.option').forEach(option => {{
-                    option.onclick = function() {{
+                    option.onclick = function(event) {{
+                        if (event.target.closest('input, label')) return;
+                        const input = this.querySelector('input');
+                        if (!input.disabled) input.click();
+                    }};
+                    option.onchange = function() {{
                         const question = this.closest('.question');
                         const inputs = question.querySelectorAll('input');
                         const type = question.dataset.type;
                         
                         if (type === 'multiple') {{
                             const input = this.querySelector('input');
-                            input.checked = !input.checked;
-                            
                             const selected = Array.from(question.querySelectorAll('input[type="checkbox"]:checked')).map(inp => inp.value);
                             
                             const decodedAnswer = question.dataset.answer.replace(/&quot;/g, '"');
@@ -936,28 +1176,13 @@ def generate_exam_html(exam_data):
                                     userAnswers[currentQuestion] = selected.sort();
                                     updateNavStatus();
                                     
-                                    setTimeout(() => {{
-                                        if (currentQuestion < totalQuestions - 1) {{
-                                            nextQuestion();
-                                        }} else {{
-                                            finishExam();
-                                        }}
-                                    }}, 1000);
+                                    scheduleAdvance();
                                 }}
                             }}
                         }} else {{
-                            const hasAnswered = Array.from(inputs).some(input => input.checked);
-                            if (hasAnswered) {{
-                                return;
-                            }}
+                            if (Array.from(inputs).every(input => input.disabled)) return;
                             
                             const input = this.querySelector('input');
-                            if (input.type === 'radio') {{
-                                input.checked = true;
-                            }} else {{
-                                input.checked = !input.checked;
-                            }}
-                            
                             const isCorrect = checkAnswer(currentQuestion, true);
                             
                             inputs.forEach(inp => {{
@@ -965,18 +1190,13 @@ def generate_exam_html(exam_data):
                             }});
                             
                             if (isCorrect) {{
-                                setTimeout(() => {{
-                                    if (currentQuestion < totalQuestions - 1) {{
-                                        nextQuestion();
-                                    }} else {{
-                                        finishExam();
-                                    }}
-                                }}, 1000);
+                                scheduleAdvance();
                             }}
                         }}
                     }};
                 }});
-            }};
+            }}
+            window.onload = bindOptionEvents;
         </script>
     </body>
     </html>

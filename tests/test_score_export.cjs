@@ -1,0 +1,53 @@
+const {JSDOM} = require('jsdom');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const html = fs.readFileSync('/tmp/exam-browser.html', 'utf8');
+(async () => {
+ const dom = new JSDOM(html, {runScripts:'dangerously', pretendToBeVisual:true});
+ const w = dom.window;
+ w.alert = () => {}; w.confirm = () => true;
+ w.setTimeout = () => 1;
+ w.document.getElementById('name').value = '<测试考生>';
+ w.document.getElementById('employeeId').value = '001';
+ w.document.getElementById('questionCount').value = '';
+ w.startExam();
+ const nodes = [...w.document.querySelectorAll('.question')];
+ // Wrong single, partially wrong multiple, wrong judgment; remainder unanswered.
+ nodes[0].querySelector('input[value="0"]').checked = true;
+ nodes[1].querySelector('input[value="1"]').checked = true;
+ nodes[2].querySelector('input[value="false"]').checked = true;
+ w.finishExam();
+ assert.ok(w.document.getElementById('saveScoreBtn'), 'save button must exist');
+ const wrong = w.getWrongQuestionDetails();
+ assert.equal(wrong.length,120);
+ assert.deepEqual(Array.from(wrong[0].selected), ['A. 选项 A']);
+ assert.deepEqual(Array.from(wrong[1].selected), ['B. 选项 B']);
+ assert.deepEqual(Array.from(wrong[2].selected), ['错误']);
+ assert.deepEqual(Array.from(wrong[3].selected), ['未作答']);
+ assert.equal(w.document.querySelectorAll('#wrongQuestionDetails article').length,120);
+ const drawn=[];
+ w.HTMLCanvasElement.prototype.getContext = () => ({measureText:t=>({width:[...t].length*15}), fillText:t=>drawn.push(t),fillRect(){},createLinearGradient:()=>({addColorStop(){}}),beginPath(){},arc(){},fill(){}});
+ w.HTMLCanvasElement.prototype.toBlob = callback => callback(new w.Blob(['png'],{type:'image/png'}));
+ let downloaded=false, revoked=false;
+ w.URL.createObjectURL=()=> 'blob:test'; w.URL.revokeObjectURL=()=>{revoked=true;};
+ w.HTMLAnchorElement.prototype.click=function(){downloaded=this.download.endsWith('.png');};
+ await w.saveScoreImage();
+ assert.ok(downloaded);
+ assert.ok(drawn.some(t=>t.includes('<测试考生>')));
+ assert.ok(drawn.some(t=>t.includes('错题详情')));
+ assert.equal(w.document.getElementById('saveScoreBtn').disabled,false);
+ // All-correct result has no wrong-question region or export section.
+ nodes.forEach(node=>{
+  const a=node.dataset.type==='multiple'?JSON.parse(node.dataset.answer):[node.dataset.answer];
+  node.querySelectorAll('input').forEach(input=>input.checked=a.includes(input.value));
+ });
+ w.finishExam();
+ assert.equal(w.getWrongQuestionDetails().length,0);
+ assert.equal(w.document.getElementById('wrongQuestionDetails').hidden,true);
+ drawn.length=0; await w.saveScoreImage();
+ assert.ok(!drawn.some(t=>t.includes('错题详情')));
+ w.HTMLCanvasElement.prototype.toBlob=callback=>callback(null);
+ await w.saveScoreImage();
+ assert.equal(w.document.getElementById('saveScoreBtn').disabled,false);
+ dom.window.close(); console.log('score export tests passed');
+})().catch(e=>{console.error(e);process.exit(1);});
