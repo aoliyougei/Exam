@@ -347,6 +347,13 @@ def generate_exam_html(exam_data):
                 text-align: center;
             }}
             
+            .entry-actions {{ display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px; }}
+            .entry-actions .btn {{ width: auto; margin: 10px 0; }}
+            #examQrDialog {{ margin: auto; border: none; border-radius: 12px; padding: 24px; width: min(440px, 92vw); max-height: 90vh; overflow: auto; text-align: center; }}
+            #examQrDialog::backdrop {{ background: rgba(0, 0, 0, 0.55); }}
+            #examQrImage {{ display: block; width: 100%; max-width: 360px; height: auto; margin: 16px auto; image-rendering: pixelated; }}
+            #examQrImage[hidden] {{ display: none; }}
+            #examQrStatus {{ color: #666; overflow-wrap: anywhere; }}
             #wrongQuestionDetails {{ text-align: left; overflow-wrap: anywhere; }}
             #wrongQuestionDetails article {{ background: #f8f9fa; border-left: 4px solid #dc3545; padding: 16px; margin: 16px 0; border-radius: 8px; white-space: pre-wrap; }}
             #wrongQuestionDetails p {{ margin-top: 8px; }}
@@ -447,8 +454,20 @@ def generate_exam_html(exam_data):
                        step="1" placeholder="如不填写则为全部考题" aria-describedby="countHelp">
             </div>
             <p id="countHelp" style="color: #666; font-size: 14px;">共 {len(exam_data['questions'])} 道题，填写后随机抽取。100 道以内总分 100，超过 100 道每题 1 分。</p>
-            <button class="btn" onclick="startExam()">开始考试</button>
+            <div class="entry-actions">
+                <button class="btn" onclick="startExam()">进入考试</button>
+                <button class="btn btn-secondary" id="showExamQrBtn" onclick="showExamQr()">二维码</button>
+            </div>
         </div>
+        <dialog id="examQrDialog" aria-labelledby="examQrTitle" aria-describedby="examQrStatus">
+            <h2 id="examQrTitle">考试二维码</h2>
+            <img id="examQrImage" alt="当前考试二维码" hidden>
+            <p id="examQrStatus" role="status" aria-live="polite"></p>
+            <div class="entry-actions">
+                <button class="btn" id="downloadExamQrBtn" onclick="downloadExamQr()">下载二维码</button>
+                <button class="btn btn-secondary" id="closeExamQrBtn" onclick="document.getElementById('examQrDialog').close()">关闭</button>
+            </div>
+        </dialog>
         
         <div id="examContainer" class="exam-container">
             <div class="progress-bar">
@@ -509,6 +528,55 @@ def generate_exam_html(exam_data):
             let timeLeft = examData.duration * 60 || 3600;
             let timerInterval;
             
+            function examQrPath() {{
+                const match = window.location.pathname.match(/^\\/exam\\/([0-9a-f]{{8}})\\.html$/);
+                return match ? `/static/qrcodes/${{match[1]}}.png` : null;
+            }}
+
+            function showExamQr() {{
+                const dialog = document.getElementById('examQrDialog');
+                const image = document.getElementById('examQrImage');
+                const status = document.getElementById('examQrStatus');
+                const button = document.getElementById('downloadExamQrBtn');
+                const path = examQrPath();
+                image.hidden = true;
+                button.disabled = !path;
+                status.textContent = path ? '正在加载二维码…' : '当前页面无法确定考试二维码，请通过正式考试链接打开。';
+                image.onload = () => {{ image.hidden = false; status.textContent = '扫码进入当前考试，或下载图片分享。'; }};
+                image.onerror = () => {{ image.hidden = true; button.disabled = true; status.textContent = '二维码加载失败，请稍后重新打开。'; }};
+                if (path) image.src = path;
+                else image.removeAttribute('src');
+                if (!dialog.open) dialog.showModal();
+            }}
+
+            async function downloadExamQr() {{
+                const button = document.getElementById('downloadExamQrBtn');
+                const path = examQrPath();
+                if (!path || button.disabled) return;
+                button.disabled = true;
+                button.textContent = '正在下载…';
+                try {{
+                    const response = await fetch(path, {{credentials: 'same-origin', redirect: 'error'}});
+                    if (!response.ok) throw new Error('QR download failed');
+                    const blob = await response.blob();
+                    if (!blob.size || blob.type.split(';')[0] !== 'image/png') throw new Error('Invalid QR image');
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    const title = document.querySelector('.header h1').textContent.replace(/[\\\\/:*?"<>|\\x00-\\x1f]/g, '_').slice(0, 80);
+                    link.download = `${{title}}_二维码.png`;
+                    link.href = url;
+                    document.body.appendChild(link);
+                    link.click(); link.remove();
+                    setTimeout(() => URL.revokeObjectURL(url), 60000);
+                    document.getElementById('examQrStatus').textContent = '已发起下载；若浏览器未保存，可长按二维码图片保存。';
+                }} catch (error) {{
+                    document.getElementById('examQrStatus').textContent = '下载失败，请重试或长按二维码图片保存。';
+                }} finally {{
+                    button.disabled = false;
+                    button.textContent = '下载二维码';
+                }}
+            }}
+
             function initQuestionNav() {{
                 const navContainer = document.getElementById('questionNav');
                 const resultNavContainer = document.getElementById('resultQuestionNav');
